@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>주간 업무보고 (Firestore 협업)</title>
+    <!-- Tailwind CSS CDN 로드 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter 폰트 사용 설정 -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; }
+        /* 내용 편집 필드의 기본 스타일 */
+        .editable-content {
+            min-height: 24px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.15s ease-in-out;
+            cursor: text;
+        }
+        .editable-content:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(66, 153, 225, 0.5); /* blue-500 shadow */
+            background-color: #fff;
+        }
+        .editable-container {
+            border: 1px solid #e5e7eb; /* gray-200 */
+            border-radius: 8px;
+            padding: 1rem;
+            min-height: 200px;
+        }
+        /* 추가/삭제 버튼 스타일 */
+        .action-button {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: background-color 0.2s, opacity 0.2s;
+        }
+        /* 로딩 스피너 */
+        .spinner {
+            border-top-color: #3b82f6;
+            border-left-color: #3b82f6;
+            border-bottom-color: transparent;
+            border-right-color: transparent;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* 인쇄 시 제외할 요소 숨기기 */
+        @media print {
+            #save-button, #print-button, #user-id-display, #save-status, .delete-item-btn, #add-bank-item-container, .editable-content:focus {
+                display: none !important;
+            }
+            body, .max-w-7xl {
+                background: none !important;
+                box-shadow: none !important;
+            }
+            .editable-content {
+                cursor: default;
+            }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <!-- 로딩 인디케이터 및 메시지 박스 -->
+    <div id="status-message" class="fixed inset-0 bg-gray-900 bg-opacity-50 z-50 hidden flex items-center justify-center">
+        <div id="message-box" class="bg-white p-6 rounded-lg shadow-2xl text-center">
+            <div id="loading-spinner" class="spinner w-8 h-8 border-4 rounded-full mx-auto mb-3"></div>
+            <p id="message-text" class="text-gray-700 font-semibold">데이터 로딩 중...</p>
+        </div>
+    </div>
+
+    <!-- 메인 컨테이너 -->
+    <div class="max-w-7xl mx-auto bg-white p-6 md:p-10 rounded-xl shadow-lg">
+
+        <!-- 헤더 및 보고일자 -->
+        <header class="mb-8 border-b-2 border-indigo-600 pb-4">
+            <!-- 제목: 재무본부로 수정 -->
+            <h1 class="text-3xl font-bold text-gray-800 text-center mb-1">재무본부 주간 업무보고</h1>
+            <div class="text-center text-sm text-gray-500">
+                <span id="user-id-display" class="font-mono text-xs bg-gray-100 px-2 py-1 rounded">사용자 ID: 로딩 중...</span>
+                <p id="report-date-display" class="text-lg font-medium text-indigo-600 mt-2">보고일자: 2024년 00월 00일 (화)</p>
+                <!-- 저장 버튼 및 상태 표시 추가 -->
+                <button id="save-button" class="mt-3 px-4 py-1 bg-green-500 text-white rounded-lg shadow-md hover:bg-green-600 transition duration-150 ease-in-out">
+                    <span id="save-icon">💾</span> 저장
+                </button>
+                <!-- 인쇄 버튼 추가 -->
+                <button id="print-button" class="mt-3 ml-2 px-4 py-1 bg-gray-500 text-white rounded-lg shadow-md hover:bg-gray-600 transition duration-150 ease-in-out">
+                    <span id="print-icon">🖨️</span> 인쇄
+                </button>
+                <p id="save-status" class="text-xs text-gray-400 mt-1 h-3 transition duration-500 opacity-0">저장 상태</p>
+            </div>
+        </header>
+
+        <!-- 메인 보고서 그리드 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <!-- 좌측: 전주사항 -->
+            <section class="p-4 bg-gray-50 rounded-lg shadow-inner">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2 text-gray-700">
+                    전주사항 <span id="prev-period-display" class="text-base font-normal text-gray-500">(00/00 ~ 00/00)</span>
+                </h2>
+
+                <!-- 카테고리: 자금 - 전주사항 -->
+                <div class="mb-6">
+                    <h3 class="text-lg font-bold text-indigo-700 mb-2 p-1 border-l-4 border-indigo-500 pl-2">💰 자금</h3>
+                    <div class="space-y-4">
+                        <!-- 자금 현황 표 (전주사항에만 존재) -->
+                        <div class="p-3 bg-white rounded-lg border">
+                            <h4 class="font-medium mb-2 text-sm text-gray-600">자금 현황 (잔액 기준)</h4>
+                            <div id="fund-balance-table">
+                                <!-- JS가 테이블 내용을 채웁니다 -->
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="bg-gray-100">
+                                            <th class="p-2 text-left w-1/4">구분</th> <!-- 구분 항목 편집 가능하게 확장 -->
+                                            <th class="p-2 text-right">당좌</th>
+                                            <th class="p-2 text-right">보통</th>
+                                            <th class="p-2 text-right">합계</th>
+                                            <!-- [수정] 액션 헤더 제거 -->
+                                            <th class="p-2 text-center w-16"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="bank-rows">
+                                        <!-- 은행별 데이터 행이 여기에 렌더링됩니다. -->
+                                    </tbody>
+                                </table>
+                                <!-- 항목 추가 버튼 컨테이너 -->
+                                <div id="add-bank-item-container" class="mt-4"></div>
+                            </div>
+                        </div>
+                        <!-- 주요 업무 리스트 -->
+                        <div class="editable-container" id="fund-prev-list">
+                            <!-- JS가 리스트 아이템을 채웁니다 -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 카테고리: 회계/세무 - 전주사항 -->
+                <div>
+                    <h3 class="text-lg font-bold text-green-700 mb-2 p-1 border-l-4 border-green-500 pl-2">🧾 회계/세무</h3>
+                    <div class="editable-container" id="tax-prev-list">
+                        <!-- JS가 리스트 아이템을 채웁니다 -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- 우측: 금주사항 -->
+            <section class="p-4 bg-white rounded-lg shadow-inner">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2 text-gray-700">
+                    금주사항 <span id="curr-period-display" class="text-base font-normal text-gray-500">(00/00 ~ 00/00)</span>
+                </h2>
+
+                <!-- 카테고리: 자금 - 금주사항 -->
+                <div class="mb-6">
+                    <h3 class="text-lg font-bold text-indigo-700 mb-2 p-1 border-l-4 border-indigo-500 pl-2">💰 자금</h3>
+                    <div class="editable-container" id="fund-curr-list">
+                        <!-- JS가 리스트 아이템을 채웁니다 -->
+                    </div>
+                </div>
+
+                <!-- 카테고리: 회계/세무 - 금주사항 -->
+                <div>
+                    <h3 class="text-lg font-bold text-green-700 mb-2 p-1 border-l-4 border-green-500 pl-2">🧾 회계/세무</h3>
+                    <div class="editable-container" id="tax-curr-list">
+                        <!-- JS가 리스트 아이템을 채웁니다 -->
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Firebase SDK (ES Module) -->
+    <script type="module">
+        // Firebase 모듈 임포트
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, collection, getDoc, runTransaction, getDocs, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firestore 디버그 로깅 활성화
+        setLogLevel('Debug');
+
+        // --- 1. 전역 변수 설정 및 Firebase 초기화 ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let userId = 'loading';
+        let reportRef;
+        let unsubscribe = null;
+        let isAuthReady = false;
+        let isSaving = false; // 저장 상태 플래그
+
+        // 자금 현황 데이터의 새로운 초기 구조 (배열 기반)
+        const INITIAL_BANK_DATA_ARRAY = [
+            { name: "신한은행", 당좌: "0억", 보통: "0억", 합계: "0억", isEditable: true },
+            { name: "하나은행", 당좌: "0억", 보통: "0억", 합계: "0억", isEditable: true },
+            { name: "산업은행", 당좌: "0억", 보통: "0억", 합계: "0억", isEditable: true },
+            { name: "합계", 당좌: "0억", 보통: "0억", 합계: "0억", isEditable: false }, // 고정된 합계 행
+        ];
+        const UNIT = '억';
+
+        // UI 요소
+        const reportDateDisplay = document.getElementById('report-date-display');
+        const prevPeriodDisplay = document.getElementById('prev-period-display');
+        const currPeriodDisplay = document.getElementById('curr-period-display');
+        const userIdDisplay = document.getElementById('user-id-display');
+        const fundPrevList = document.getElementById('fund-prev-list');
+        const fundCurrList = document.getElementById('fund-curr-list');
+        const taxPrevList = document.getElementById('tax-prev-list');
+        const taxCurrList = document.getElementById('tax-curr-list');
+        const bankRowsContainer = document.getElementById('bank-rows');
+        const statusMessage = document.getElementById('status-message');
+        const messageText = document.getElementById('message-text');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const saveButton = document.getElementById('save-button');
+        const printButton = document.getElementById('print-button'); // 인쇄 버튼
+        const saveStatus = document.getElementById('save-status');
+        const fundBalanceTableContainer = document.getElementById('fund-balance-table');
+
+        // 메시지 표시 함수
+        const showMessage = (text, isLoading = false) => {
+            messageText.textContent = text;
+            if (isLoading) {
+                loadingSpinner.classList.remove('hidden');
+            } else {
+                loadingSpinner.classList.add('hidden');
+            }
+            statusMessage.classList.remove('hidden');
+        };
+
+        const hideMessage = () => {
+            statusMessage.classList.add('hidden');
+        };
+
+        // 저장 상태 표시 함수
+        const setSaveStatus = (message, color = 'text-gray-400') => {
+            saveStatus.textContent = message;
+            saveStatus.className = `text-xs mt-1 h-3 transition duration-500 ${color} opacity-100`;
+            clearTimeout(saveStatus.timer);
+            saveStatus.timer = setTimeout(() => {
+                saveStatus.classList.remove('opacity-100');
+                saveStatus.classList.add('opacity-0');
+            }, 3000);
+        };
+
+        // --- 2. 날짜 계산 로직 ---
+        function getReportDates() {
+            const today = new Date();
+            const dayOfWeek = today.getDay(); 
+            let diff = 2 - dayOfWeek;
+            if (dayOfWeek > 2) { 
+                diff -= 7;
+            } else if (dayOfWeek === 2 && today.getHours() >= 0) {
+            } else if (dayOfWeek === 1 || dayOfWeek === 0) { 
+                diff = 2 - dayOfWeek - 7;
+            }
+
+            const reportDate = new Date(today);
+            reportDate.setDate(today.getDate() + diff);
+
+            const reportDateString = reportDate.toISOString().slice(0, 10);
+            const reportDateFormatted = `${reportDate.getFullYear()}년 ${reportDate.getMonth() + 1}월 ${reportDate.getDate()}일 (화)`;
+
+            const getMondayOfWeek = (date) => {
+                const day = date.getDay() === 0 ? 7 : date.getDay(); 
+                const monday = new Date(date);
+                monday.setDate(date.getDate() - day + 1);
+                return monday;
+            };
+
+            const currMonday = getMondayOfWeek(reportDate);
+            const prevMonday = new Date(currMonday);
+            prevMonday.setDate(currMonday.getDate() - 7);
+
+            const formatDate = (date) => `${(date.getMonth() + 1).toString().padStart(2, '0')}/${date.getDate().toString().padStart(2, '0')}`;
+            const getPeriodString = (monday) => {
+                const friday = new Date(monday);
+                friday.setDate(monday.getDate() + 4);
+                return `(${formatDate(monday)} ~ ${formatDate(friday)})`;
+            };
+
+            const prevPeriod = getPeriodString(prevMonday);
+            const currPeriod = getPeriodString(currMonday);
+
+            return { reportDateString, reportDateFormatted, prevPeriod, currPeriod };
+        }
+
+        // --- 3. Firebase 및 Firestore 초기화 ---
+        if (firebaseConfig) {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // 인증 상태 리스너 설정
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                    } else {
+                        if (initialAuthToken) {
+                            try {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                                userId = auth.currentUser.uid;
+                            } catch (error) {
+                                console.error("Custom token sign in failed. Falling back to anonymous.", error);
+                                await signInAnonymously(auth);
+                                userId = auth.currentUser.uid;
+                            }
+                        } else {
+                            await signInAnonymously(auth);
+                            userId = auth.currentUser.uid;
+                        }
+                    }
+
+                    userIdDisplay.textContent = `사용자 ID: ${userId}`;
+                    isAuthReady = true;
+                    if (db) {
+                        loadAndListenToReport();
+                    } else {
+                        console.error("Firestore DB not initialized.");
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase Initialization Error:", error);
+                showMessage(`Firebase 초기화 실패: ${error.message}. (config 확인 필요)`);
+            }
+        } else {
+            showMessage("Firebase 설정 정보(__firebase_config)가 제공되지 않았습니다.", false);
+        }
+
+        // --- 4. Firestore 연동 함수 ---
+
+        // Firestore 문서 참조 가져오기 (공유 데이터 경로)
+        function getReportDocumentRef() {
+            if (!isAuthReady) {
+                console.error("Auth is not ready yet.");
+                return null;
+            }
+            const { reportDateString } = getReportDates();
+            const collectionPath = `/artifacts/${appId}/public/data/weeklyReports`;
+            return doc(db, collectionPath, reportDateString);
+        }
+
+        // 실시간 데이터 로드 및 리스너 설정
+        function loadAndListenToReport() {
+            if (unsubscribe) {
+                unsubscribe(); // 기존 리스너 해제
+            }
+
+            reportRef = getReportDocumentRef();
+            if (!reportRef) return;
+
+            const { reportDateString, reportDateFormatted, prevPeriod, currPeriod } = getReportDates();
+            showMessage("실시간 데이터 연결 중...", true);
+
+            unsubscribe = onSnapshot(reportRef, async (docSnapshot) => {
+                hideMessage();
+                if (docSnapshot.exists()) {
+                    console.log("Document data received:", docSnapshot.data());
+                    renderReport(docSnapshot.data());
+                } else {
+                    console.log("No such document. Creating new report.");
+                    showMessage("새 보고서 문서 생성 중...", true);
+
+                    const initialData = {
+                        dateReported: reportDateFormatted,
+                        datePeriodPrev: prevPeriod,
+                        datePeriodCurr: currPeriod,
+                        contentFundPrev: { bankData: INITIAL_BANK_DATA_ARRAY, list: ["전주 주요 업무 1", "전주 주요 업무 2"] },
+                        contentFundCurr: { list: ["금주 주요 업무 1", "금주 주요 업무 2"] },
+                        contentTaxPrev: { list: ["전주 회계/세무 업무 1", "전주 회계/세무 업무 2"] },
+                        contentTaxCurr: { list: ["금주 회계/세무 업무 1", "금주 회계/세무 업무 2"] },
+                    };
+                    
+                    try {
+                        await setDoc(reportRef, initialData);
+                        renderReport(initialData);
+                        hideMessage();
+                    } catch (e) {
+                        console.error("Error creating document: ", e);
+                        showMessage(`보고서 생성 실패: ${e.message}`, false);
+                    }
+                }
+            }, (error) => {
+                console.error("Error listening to document:", error);
+                showMessage(`데이터 연결 오류: ${error.message}`, false);
+            });
+        }
+        
+        /**
+         * Firestore의 특정 필드 값을 업데이트하는 함수 (주요 업무 리스트용).
+         */
+        async function updateField(fieldName, value) {
+            if (!isAuthReady || !reportRef || isSaving) {
+                console.warn("Firestore가 준비되지 않았거나 저장 중입니다. 저장 건너뛰기.");
+                return;
+            }
+            
+            isSaving = true;
+            setSaveStatus("저장 중...", 'text-yellow-600');
+            
+            try {
+                await updateDoc(reportRef, { [fieldName]: value });
+                console.log(`Field ${fieldName} updated successfully.`);
+                setSaveStatus("저장 완료!", 'text-green-600');
+            } catch (error) {
+                console.error(`Error updating field ${fieldName}:`, error);
+                setSaveStatus(`저장 실패: ${error.message}`, 'text-red-600');
+            } finally {
+                isSaving = false;
+            }
+        }
+
+        // --- 5. 자금 현황 테이블 관리 (Transaction 기반으로 수정) ---
+
+        /**
+         * 은행 잔액 배열을 받아 합계 필드를 계산하여 업데이트된 배열을 반환합니다.
+         * @param {Array<object>} dataArray - 현재 은행 데이터 배열
+         * @returns {Array<object>} 합계가 계산된 새 배열
+         */
+        function recalculateTotals(dataArray) {
+            let totalDangjwa = 0;
+            let totalBotong = 0;
+            const newData = JSON.parse(JSON.stringify(dataArray));
+            
+            // 1. 합계 계산
+            newData.forEach(item => {
+                if (item.isEditable) {
+                    const dangjwaValue = parseFloat((item.당좌 || `0${UNIT}`).replace(UNIT, '') || '0');
+                    const botongValue = parseFloat((item.보통 || `0${UNIT}`).replace(UNIT, '') || '0');
+                    totalDangjwa += isNaN(dangjwaValue) ? 0 : dangjwaValue;
+                    totalBotong += isNaN(botongValue) ? 0 : botongValue;
+                }
+            });
+            
+            // 2. '합계' 행 업데이트
+            const totalBankIndex = newData.findIndex(item => item.name === '합계');
+            if (totalBankIndex !== -1) {
+                newData[totalBankIndex]['당좌'] = `${totalDangjwa}${UNIT}`;
+                newData[totalBankIndex]['보통'] = `${totalBotong}${UNIT}`;
+                newData[totalBankIndex]['합계'] = `${totalDangjwa + totalBotong}${UNIT}`;
+            }
+            return newData;
+        }
+
+
+        /**
+         * 은행 항목의 특정 필드 값을 업데이트하고 Firestore에 저장합니다 (Transaction 사용).
+         */
+        async function updateBankItemField(indexToUpdate, fieldName, value) {
+            if (!isAuthReady || !reportRef) return;
+            if (isSaving) { setSaveStatus("저장 중... 잠시 후 다시 시도하세요.", 'text-yellow-600'); return; }
+
+            isSaving = true;
+            setSaveStatus("저장 중...", 'text-yellow-600');
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const docSnapshot = await transaction.get(reportRef);
+                    if (!docSnapshot.exists()) throw new Error("보고서 문서가 존재하지 않습니다.");
+                    
+                    const currentData = docSnapshot.data().contentFundPrev?.bankData || INITIAL_BANK_DATA_ARRAY;
+                    const newData = JSON.parse(JSON.stringify(currentData));
+
+                    if (newData[indexToUpdate]) {
+                        newData[indexToUpdate][fieldName] = value;
+                    } else {
+                        throw new Error("잘못된 은행 항목 인덱스입니다.");
+                    }
+
+                    const finalData = recalculateTotals(newData);
+
+                    transaction.update(reportRef, {
+                        'contentFundPrev.bankData': finalData
+                    });
+                });
+                setSaveStatus("저장 완료!", 'text-green-600');
+            } catch (e) {
+                console.error("Transaction failed during bank item update:", e);
+                setSaveStatus(`저장 실패: ${e.message}`, 'text-red-600');
+            } finally {
+                isSaving = false;
+            }
+        }
+
+        /**
+         * 은행 잔액 테이블에 새 항목을 추가합니다 (Transaction 사용).
+         */
+        async function addBankItem() {
+            if (!isAuthReady || !reportRef) return;
+            if (isSaving) { setSaveStatus("저장 중... 잠시 후 다시 시도하세요.", 'text-yellow-600'); return; }
+
+            isSaving = true;
+            setSaveStatus("항목 추가 및 저장 중...", 'text-yellow-600');
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const docSnapshot = await transaction.get(reportRef);
+                    if (!docSnapshot.exists()) throw new Error("보고서 문서가 존재하지 않습니다.");
+                    
+                    const currentData = docSnapshot.data().contentFundPrev?.bankData || INITIAL_BANK_DATA_ARRAY;
+                    
+                    const newName = `신규은행${currentData.filter(item => item.isEditable).length + 1}`;
+                    const newItem = { name: newName, 당좌: `0${UNIT}`, 보통: `0${UNIT}`, 합계: `0${UNIT}`, isEditable: true };
+                    
+                    // 합계 행 앞에 새 항목 삽입
+                    const totalIndex = currentData.findIndex(item => item.name === '합계');
+                    
+                    const newData = [...currentData];
+                    if (totalIndex !== -1) {
+                        newData.splice(totalIndex, 0, newItem);
+                    } else {
+                        newData.push(newItem);
+                    }
+
+                    const finalData = recalculateTotals(newData);
+
+                    transaction.update(reportRef, {
+                        'contentFundPrev.bankData': finalData
+                    });
+                });
+                setSaveStatus("은행 항목 추가 완료!", 'text-green-600');
+            } catch (e) {
+                console.error("Transaction failed during bank item addition:", e);
+                setSaveStatus(`항목 추가 실패: ${e.message}`, 'text-red-600');
+            } finally {
+                isSaving = false;
+            }
+        }
+
+        /**
+         * 은행 잔액 테이블에서 항목을 삭제합니다 (Transaction 사용 - 삭제 오류 수정의 핵심).
+         * @param {number} indexToDelete - 삭제할 항목의 배열 인덱스
+         */
+        async function deleteBankItem(indexToDelete) {
+            if (!isAuthReady || !reportRef) return;
+            if (isSaving) { setSaveStatus("저장 중... 잠시 후 다시 시도하세요.", 'text-yellow-600'); return; }
+
+            isSaving = true;
+            setSaveStatus("삭제 및 저장 중...", 'text-yellow-600');
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const docSnapshot = await transaction.get(reportRef);
+                    if (!docSnapshot.exists()) {
+                        throw new Error("보고서 문서가 존재하지 않습니다.");
+                    }
+
+                    // 최신 데이터 읽기
+                    const currentData = docSnapshot.data().contentFundPrev?.bankData || INITIAL_BANK_DATA_ARRAY;
+
+                    // 1. 삭제 가능 여부 확인
+                    if (currentData[indexToDelete] && currentData[indexToDelete].isEditable === false) {
+                         throw new Error("고정된 합계 항목은 삭제할 수 없습니다.");
+                    }
+
+                    // 2. 항목 삭제
+                    const newData = currentData.filter((_, index) => index !== indexToDelete);
+                    
+                    // 3. 합계 재계산
+                    const finalData = recalculateTotals(newData);
+
+                    // 4. Firestore에 트랜잭션 업데이트
+                    transaction.update(reportRef, {
+                        'contentFundPrev.bankData': finalData
+                    });
+                });
+
+                setSaveStatus("은행 항목 삭제 완료!", 'text-green-600');
+            } catch (e) {
+                console.error("Transaction failed during bank item deletion:", e);
+                if (e.message.includes("고정된 합계 항목은 삭제할 수 없습니다")) {
+                    setSaveStatus("고정된 합계 항목은 삭제할 수 없습니다.", 'text-red-600');
+                } else {
+                    setSaveStatus(`삭제 실패: ${e.message}`, 'text-red-600');
+                }
+            } finally {
+                isSaving = false;
+            }
+        }
+
+
+        // --- 6. UI 렌더링 및 이벤트 핸들링 ---
+
+        /**
+         * Firestore 데이터를 바탕으로 UI를 렌더링합니다.
+         * @param {object} data - Firestore 문서 데이터
+         */
+        function renderReport(data) {
+            // 1. 날짜 정보 업데이트
+            reportDateDisplay.textContent = `보고일자: ${data.dateReported}`;
+            prevPeriodDisplay.textContent = data.datePeriodPrev;
+            currPeriodDisplay.textContent = data.datePeriodCurr;
+
+            // 2. 자금 현황 표 렌더링 (전주사항)
+            renderBankTable(data.contentFundPrev.bankData || INITIAL_BANK_DATA_ARRAY);
+
+            // 3. 주요 업무 리스트 렌더링
+            renderList(fundPrevList, data.contentFundPrev.list || [], 'contentFundPrev', 'list');
+            renderList(fundCurrList, data.contentFundCurr.list || [], 'contentFundCurr', 'list');
+            renderList(taxPrevList, data.contentTaxPrev.list || [], 'contentTaxPrev', 'list');
+            renderList(taxCurrList, data.contentTaxCurr.list || [], 'contentTaxCurr', 'list');
+        }
+
+        /**
+         * 자금 현황 표를 렌더링하고 이벤트 리스너를 추가합니다.
+         * (이 함수에서 deleteBankItem 호출 방식 변경)
+         * @param {Array<object>} bankDataArray - 은행별 잔액 데이터 배열
+         */
+        function renderBankTable(bankDataArray) {
+            bankRowsContainer.innerHTML = ''; // 기존 내용 초기화
+            
+            const addBankContainer = fundBalanceTableContainer.querySelector('#add-bank-item-container');
+            addBankContainer.innerHTML = '';
+            
+            // 1. 은행 데이터 행 렌더링 (배열 전체 순회)
+            bankDataArray.forEach((item, index) => {
+                const isEditable = item.isEditable !== false;
+                
+                const row = document.createElement('tr');
+                row.className = isEditable 
+                    ? 'border-t hover:bg-yellow-50 group' 
+                    : 'border-t-2 border-indigo-300 font-bold bg-indigo-50 hover:bg-indigo-100';
+                
+                let rowContent = '';
+                
+                // 구분 (은행 이름) 셀
+                const nameCell = document.createElement('td');
+                nameCell.className = 'p-2 font-medium relative';
+                
+                if (isEditable) {
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'editable-content inline-block w-full text-left bg-transparent hover:bg-white';
+                    nameSpan.setAttribute('contenteditable', 'true');
+                    nameSpan.textContent = item.name;
+
+                    // 이름 저장 이벤트 리스너 (updateBankItemField 호출 방식 변경)
+                    nameSpan.addEventListener('blur', (e) => {
+                        const newName = e.target.textContent.trim();
+                        if (newName && newName !== item.name) {
+                            updateBankItemField(index, 'name', newName); // currentData 인자 제거
+                        } else {
+                            e.target.textContent = item.name; // 원복
+                        }
+                    });
+                    nameCell.appendChild(nameSpan);
+                } else {
+                    nameCell.textContent = item.name; // 합계 고정
+                }
+                rowContent += nameCell.outerHTML;
+
+
+                // 당좌, 보통, 합계 셀 렌더링
+                ['당좌', '보통', '합계'].forEach(field => {
+                    const cell = document.createElement('td');
+                    cell.className = 'p-2 text-right';
+                    
+                    if (isEditable && field !== '합계') { // 합계 필드는 자동으로 계산되므로 편집 불가능
+                        const editableSpan = document.createElement('span');
+                        editableSpan.className = 'editable-content inline-block w-full text-right bg-transparent hover:bg-white';
+                        editableSpan.setAttribute('contenteditable', 'true');
+                        editableSpan.textContent = item[field];
+                        
+                        // 값 저장 이벤트 리스너 (updateBankItemField 호출 방식 변경)
+                        editableSpan.addEventListener('blur', (e) => {
+                            let newValue = e.target.textContent.trim() || '0';
+                            if (!newValue.endsWith(UNIT) && newValue !== '0') {
+                                newValue += UNIT;
+                            } else if (newValue === '0') {
+                                newValue = `0${UNIT}`;
+                            }
+
+                            if (newValue !== item[field]) {
+                                updateBankItemField(index, field, newValue); // currentData 인자 제거
+                            } else {
+                                e.target.textContent = item[field]; // 원복
+                            }
+                        });
+                        cell.appendChild(editableSpan);
+                    } else {
+                         // 합계 행 및 합계 필드는 편집 불가능
+                        cell.textContent = item[field];
+                    }
+                    rowContent += cell.outerHTML;
+                });
+                
+                // 삭제/액션 버튼 셀
+                const actionCell = document.createElement('td');
+                actionCell.className = 'p-1 text-center w-16';
+
+                if (isEditable) {
+                    const deleteButton = document.createElement('button');
+                    deleteButton.className = 'delete-bank-btn action-button bg-red-100 text-red-600 hover:bg-red-200 transition duration-150 opacity-0 group-hover:opacity-100';
+                    deleteButton.textContent = '삭제';
+                    // 삭제 버튼 이벤트 리스너 (deleteBankItem 호출 방식 변경)
+                    deleteButton.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        deleteBankItem(index); // index만 전달
+                    });
+                    actionCell.appendChild(deleteButton);
+                } else {
+                    actionCell.classList.add('text-xs', 'text-gray-500');
+                }
+                rowContent += actionCell.outerHTML;
+
+                row.innerHTML = rowContent;
+                bankRowsContainer.appendChild(row);
+            });
+            
+            // 2. 항목 추가 버튼 추가
+            const addButton = document.createElement('button'); 
+            addButton.className = 'action-button bg-indigo-100 text-indigo-600 hover:bg-indigo-200 mt-4 w-full';
+            addButton.textContent = '+ 구분 항목 추가';
+            // 항목 추가 이벤트 리스너 (addBankItem 호출 방식 변경)
+            addButton.addEventListener('click', () => {
+                addBankItem(); // 인자 제거
+            });
+            addBankContainer.appendChild(addButton); 
+        }
+
+        /**
+         * 업무 리스트를 렌더링하고 이벤트 리스너를 추가합니다.
+         */
+        function renderList(container, data, category, subField) {
+            container.innerHTML = ''; 
+
+            data.forEach((item, index) => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'flex items-start mb-2 group';
+                itemDiv.innerHTML = `
+                    <span class="mr-2 pt-1 text-gray-400">•</span>
+                    <span class="editable-content flex-grow" contenteditable="true" data-index="${index}"></span>
+                    <button class="delete-item-btn action-button bg-red-100 text-red-600 hover:bg-red-200 ml-2 opacity-0 group-hover:opacity-100" data-index="${index}">삭제</button>
+                `;
+                
+                const editableSpan = itemDiv.querySelector('.editable-content');
+                editableSpan.textContent = item;
+
+                editableSpan.addEventListener('blur', (e) => {
+                    const newText = e.target.textContent.trim();
+                    const itemIndex = parseInt(e.target.dataset.index);
+                    if (newText !== data[itemIndex]) {
+                        const newData = [...data];
+                        newData[itemIndex] = newText;
+                        updateField(`${category}.${subField}`, newData);
+                    }
+                });
+                
+                itemDiv.querySelector('.delete-item-btn').addEventListener('click', (e) => {
+                    e.stopPropagation(); 
+                    deleteItem(category, subField, index, data);
+                });
+
+                container.appendChild(itemDiv);
+            });
+
+            const addButton = document.createElement('button');
+            addButton.className = 'action-button bg-indigo-100 text-indigo-600 hover:bg-indigo-200 mt-4 w-full';
+            addButton.textContent = '+ 항목 추가';
+            addButton.addEventListener('click', () => {
+                addItem(category, subField, data);
+            });
+            container.appendChild(addButton);
+        }
+
+        /**
+         * Firestore 배열에 새 항목을 추가합니다.
+         */
+        async function addItem(category, subField, currentData) {
+            const newItem = "새 항목을 입력하세요...";
+            const newData = [...currentData, newItem];
+            await updateField(`${category}.${subField}`, newData);
+        }
+
+        /**
+         * Firestore 배열에서 항목을 삭제합니다.
+         */
+        async function deleteItem(category, subField, indexToDelete, currentData) {
+            try {
+                 const newData = currentData.filter((_, index) => index !== indexToDelete);
+                 await updateField(`${category}.${subField}`, newData);
+                 setSaveStatus("항목 삭제 완료", 'text-green-600');
+            } catch (error) {
+                console.error("Deletion failed:", error);
+                setSaveStatus("삭제 실패", 'text-red-600');
+            }
+        }
+
+        /**
+         * 강제 저장 버튼 로직: 현재 포커스된 요소를 blur 시켜 자동 저장 이벤트를 강제로 발생시킵니다.
+         */
+        function manualSave() {
+            const focusedElement = document.activeElement;
+            if (focusedElement && focusedElement.classList.contains('editable-content')) {
+                focusedElement.blur();
+            } else {
+                setSaveStatus("저장 완료!", 'text-green-600');
+            }
+        }
+
+
+        // --- 7. 초기 실행 및 이벤트 리스너 등록 ---
+        window.onload = () => {
+            if (!firebaseConfig) {
+                const { reportDateFormatted, prevPeriod, currPeriod } = getReportDates();
+                reportDateDisplay.textContent = `보고일자: ${reportDateFormatted}`;
+                prevPeriodDisplay.textContent = prevPeriod;
+                currPeriodDisplay.textContent = currPeriod;
+            }
+            
+            saveButton.addEventListener('click', manualSave);
+            
+            printButton.addEventListener('click', () => {
+                window.print();
+            });
+        };
+
+    </script>
+</body>
+</html>
